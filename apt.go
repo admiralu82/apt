@@ -65,7 +65,9 @@ const (
 	version = 17
 	// служебные пакеты обмена
 	shedSelfRestart = "SelfRestart"
+	shedSelfUpdate  = "SelfUpdate"
 	shedHello       = "Hello"
+	shedExServer    = "ExServer"
 )
 
 type Settings struct {
@@ -227,8 +229,8 @@ func main() {
 	// проверяем что это не перезапуск
 	for _, v := range os.Args {
 		if v == "wait" {
-			log.Println("Автообновление: ждем 5 секунд перед стартом ...")
-			time.Sleep(5 * time.Second)
+			log.Println("Автообновление: ждем 10 секунд перед стартом ...")
+			time.Sleep(10 * time.Second)
 		}
 		if v == "debug" {
 			debug = true
@@ -317,12 +319,12 @@ func main() {
 			for {
 				select {
 				case st := <-selfupdate:
-					if st == "restart" {
+					if st == shedSelfRestart {
 						log.Println("Начало перезапуска. Ожидание 60 сек.")
 						time.Sleep(60 * time.Second)
 						doRestart()
 					}
-					if st == "update" {
+					if st == shedSelfUpdate {
 						if doUpdate() {
 							log.Println("Начало перезапуска")
 							time.Sleep(2 * time.Second)
@@ -345,7 +347,7 @@ func main() {
 	}
 
 	if isServer == false {
-		selfupdate <- "update"
+		selfupdate <- shedSelfUpdate
 	}
 
 	if isServer {
@@ -485,7 +487,7 @@ func sheduler() {
 	cmdrcvChan := make(chan progInfo, 100)
 	taskChan = make(chan cfgTask)
 
-	go WebcientAptstat(sendChan, cmdrcvChan)
+	go ClntAptstat(sendChan, cmdrcvChan)
 
 	go func() {
 		taskToWork := make([]cfgTask, 0)
@@ -502,11 +504,11 @@ func sheduler() {
 					lens := len(taskToWork)
 					ttt := taskToWork[lens-1]
 
-					if ttt.ShedType == shedSelfRestart && len(taskToWork) > 1 {
-						// задание рестарта не последнее, переносим её назад
-						taskToWork = append([]cfgTask{ttt}, taskToWork[:lens-1]...)
-						ttt = taskToWork[lens-1]
-					}
+					// if ttt.ShedType == shedSelfRestart && len(taskToWork) > 1 {
+					// 	// задание рестарта не последнее, переносим её назад
+					// 	taskToWork = append([]cfgTask{ttt}, taskToWork[:lens-1]...)
+					// 	ttt = taskToWork[lens-1]
+					// }
 
 					stat := task(ttt)
 					packetTask := progInfo{TASKSTATUS: stat}
@@ -601,7 +603,7 @@ func task(cfg cfgTask) taskStatus {
 		status.STOP = time.Now()
 		status.LOG = ""
 
-		selfupdate <- "restart"
+		selfupdate <- shedSelfRestart
 		return status
 	}
 
@@ -634,6 +636,7 @@ func task(cfg cfgTask) taskStatus {
 
 	if err != nil {
 		log.Println("Планировщик: ошибка запуска задания ", cfg.ShedType, err)
+		status.LOG = fmt.Sprintln("Планировщик:", err.Error())
 	}
 	// ожидание завершения работы
 	done := make(chan string)
@@ -653,13 +656,13 @@ func task(cfg cfgTask) taskStatus {
 		time.Sleep(1 * time.Second)
 		select {
 		case ret := <-done:
-			status.EXITCODE += " " + ret
+			status.EXITCODE = ret
 			// log.Println("Завешен обмен")
 			break
 		default:
 
-			// если ожидание превысит 20 минут то убиваем процесс
-			if time.Now().Unix()-status.START.Unix() > int64(20*60) {
+			// если ожидание превысит интервал запуск то убиваем процесс
+			if time.Now().Unix()-status.START.Unix() > int64((cfg.Interval-2)*60) {
 				status.EXITCODE = "100. Принудительное."
 
 				cmd.Process.Kill()
@@ -679,13 +682,33 @@ func task(cfg cfgTask) taskStatus {
 	//вернем пути назад
 	err = os.Chdir(old_cwd)
 
-	status.LOG, _ = charmap.CodePage866.NewDecoder().String(string(buf.String()))
+	sss, _ := charmap.CodePage866.NewDecoder().String(string(buf.String()))
 
 	log.Println("Планировщик: задание:", cfg.ShedType, " закончено. ExitCode=", status.EXITCODE)
 	status.STOP = time.Now()
 
-	if status.LOG == "" {
-		status.LOG = fmt.Sprintln(exePath, cfg.Param)
+	if sss == "" {
+
+	} else {
+		status.LOG += fmt.Sprintln(sss)
+	}
+
+	if cfg.ShedType == shedExServer {
+		//если это обмен то добавим в LOG отчет выгрузки
+		status.LOG += fmt.Sprintln("#####$$$$$%%%%%")
+
+		yy, mm, dd := time.Now().Date()
+
+		logPath := filepath.Join(cfg.Path, fmt.Sprintf("EX_TMP\\%4d_%2d_2d.log", yy, mm, dd))
+
+		bbb, err := ioutil.ReadFile(logPath)
+		log.Println("Планировщик: собираем статистику." + logPath)
+
+		if err != nil {
+			status.LOG += err.Error()
+		} else {
+			status.LOG += string(bbb)
+		}
 	}
 
 	return status
@@ -953,12 +976,12 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// запрос на соединение
-	c, err := upgrader.Upgrade(w, r, nil)
+	con, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Print("WS SrvAptstat: ошибка создания websocket:", err)
 		return
 	}
-	defer c.Close()
+	defer con.Close()
 
 	// надо сохранить с и node_id в clients
 	first_packet := true
@@ -966,7 +989,7 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		var packet progInfo
-		err := c.ReadJSON(&packet)
+		err := con.ReadJSON(&packet)
 		if err != nil {
 			log.Println("WS SrvAptstat: JSON read error:", err)
 			break
@@ -978,7 +1001,7 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 			clients[packet.NODE_ID] = clientsInfo{
 				Addr: r.RemoteAddr,
 				Info: packet,
-				Con:  c,
+				Con:  con,
 			}
 
 			first_node_id = packet.NODE_ID
@@ -1056,10 +1079,49 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// добавление в базу пакета статистики
+
+		sss_log := ""
+		sss_big_log := ""
+
+		sss := strings.Split(packet.TASKSTATUS.LOG, "#####$$$$$%%%%%")
+		if len(sss) == 1 {
+			sss_log = packet.TASKSTATUS.LOG
+			sss_big_log = ""
+		} else {
+			if len(sss) == 2 {
+				if len(sss[1]) < 200 {
+					// короткий лог
+					sss_log = packet.TASKSTATUS.LOG
+					sss_big_log = sss[1]
+				} else {
+					sss_log = sss[0]
+					sss_big_log = sss[1]
+				}
+
+			} else {
+				sss_log = packet.TASKSTATUS.LOG
+				sss_big_log = ""
+			}
+		}
+
 		_, err = dbSrv.Exec("insert into LOGS (NODE_ID, TYPE, DATE_START, DATE_END, EXITCODE, LOG) values ($1, $2, $3, $4, $5, $6)",
 			packet.NODE_ID, packet.TASKSTATUS.SHED_TYPE, packet.TASKSTATUS.START.Format("2006-01-02 15:04:05"),
 			packet.TASKSTATUS.STOP.Format("2006-01-02 15:04:05"), packet.TASKSTATUS.EXITCODE,
-			packet.TASKSTATUS.LOG)
+			sss_log)
+
+		if packet.TASKSTATUS.SHED_TYPE == shedExServer {
+			//дополнительно сохраним большой лог
+
+			yy, mm, dd := packet.TASKSTATUS.START.Date()
+			date := fmt.Sprintf("%4d-%2d-%2d 23:59:59", yy, mm, dd)
+			// удалим старый лог
+			_, err = dbSrv.Exec("delete from LOGS where NODE_ID = $1, DATE_START=%2, TYPE=%3",
+				packet.NODE_ID, date, packet.TASKSTATUS.SHED_TYPE+"BIG")
+
+			//сохраним sss_big_log
+			_, err = dbSrv.Exec("insert into LOGS (NODE_ID, TYPE, DATE_START, DATE_END, EXITCODE, LOG) values ($1, $2, $3, $4, $5, $6)",
+				packet.NODE_ID, packet.TASKSTATUS.SHED_TYPE+"BIG", date, date, "", sss_big_log)
+		}
 
 		if debug {
 			log.Println("WS SrvAptstat: error: ", err)
@@ -1095,7 +1157,7 @@ func equal(map1, map2 map[string]string) bool {
 
 /////////////////////////////////////////////////////////
 
-func WebcientAptstat(sendChan chan progInfo, cmdrcvChan chan<- progInfo) {
+func ClntAptstat(sendChan chan progInfo, cmdrcvChan chan<- progInfo) {
 
 	var addr_srv string = cfgMain.Settings.SRV_CONFIG
 	var packetsToSend []progInfo = make([]progInfo, 0)
@@ -1111,14 +1173,20 @@ func WebcientAptstat(sendChan chan progInfo, cmdrcvChan chan<- progInfo) {
 
 		// устанавливаем соединение
 		log.Println("WS Client Aptstat: подключаемся к ", u.String())
-		c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+		con, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 		if err != nil {
 			log.Println("WS Client Aptstat: ошибка установки соединния: ", err)
 			time.Sleep(10 * time.Second)
 			continue
 		}
-		defer c.Close()
+		defer con.Close()
 		log.Println("WS Client Aptstat: соединение установленно.")
+
+		ticker := time.NewTicker(15 * time.Second)
+		defer func() {
+			ticker.Stop()
+			con.Close()
+		}()
 
 		// sql запрос к базе для подготовки hello пакета
 		packetInfo := sqlINFO()
@@ -1137,10 +1205,10 @@ func WebcientAptstat(sendChan chan progInfo, cmdrcvChan chan<- progInfo) {
 		go func() {
 			packetToRead := progInfo{}
 			for {
-				if c == nil {
+				if con == nil {
 					break
 				}
-				err := c.ReadJSON(&packetToRead)
+				err := con.ReadJSON(&packetToRead)
 				if err == nil {
 					//если ошибки нет то отправляем пакет в поток прочитанных
 					readChan <- packetToRead
@@ -1171,12 +1239,15 @@ func WebcientAptstat(sendChan chan progInfo, cmdrcvChan chan<- progInfo) {
 				}
 				packetsToRead = append(packetsToRead, t)
 				continue
+			case <-ticker.C:
+				con.WriteMessage(websocket.PingMessage, []byte{})
+				continue
 			default:
 				// обработка исходящих пакетов
 				lens := len(packetsToSend)
 				if lens > 0 {
 					buf, _ := json.Marshal(packetsToSend[lens-1])
-					err := c.WriteMessage(websocket.TextMessage, buf)
+					err := con.WriteMessage(websocket.TextMessage, buf)
 
 					if err != nil {
 						log.Println("WS Client Aptstat: ошибка записи пакета:", err)

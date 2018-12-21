@@ -62,7 +62,7 @@ var guiLastWork chan progInfo
 var taskChan chan cfgTask
 
 const (
-	version = 17
+	version = 18
 	// служебные пакеты обмена
 	shedSelfRestart = "SelfRestart"
 	shedSelfUpdate  = "SelfUpdate"
@@ -139,7 +139,7 @@ func sqlINFO() progInfo {
 
 	rows, err := conn.Query("SELECT * FROM EXE_VERSION;")
 	if err != nil {
-		log.Println("SQL info error ", err)
+		Logger("SQL info error ", err)
 	}
 	var name, version string
 	for rows.Next() {
@@ -170,7 +170,7 @@ func doUpdate() bool {
 
 	u := "http://" + addr_srv + "/aptupdate?ver=" + fmt.Sprint(version)
 
-	log.Println("Автообновление: " + u)
+	Logger("Автообновление: " + u)
 
 	// request the new file
 	resp, err := http.Get(u)
@@ -183,29 +183,29 @@ func doUpdate() bool {
 	if err != nil {
 		return false
 	}
-	log.Println("Автообновление: Обновление длинной.", len(updbuf))
+	Logger("Автообновление: Обновление длинной.", len(updbuf))
 	if len(updbuf) < 1000 {
-		log.Println("Автообновление: Обновление не требуется.")
+		Logger("Автообновление: Обновление не требуется.")
 		return false
 	}
 
 	err = ioutil.WriteFile(appName+".new", updbuf, 0777)
-	log.Println("Автообновление: Применение обновления.", err)
+	Logger("Автообновление: Применение обновления.", err)
 	err = os.Remove(appName + ".old")
-	log.Println("Автообновление: step0", err)
+	Logger("Автообновление: step0", err)
 	time.Sleep(1 * time.Second)
 	err = os.Rename(appName, appName+".old")
-	log.Println("Автообновление: step1", err)
+	Logger("Автообновление: step1", err)
 	time.Sleep(1 * time.Second)
 	err = os.Rename(appName+".new", appName)
-	log.Println("Автообновление: step2", err)
+	Logger("Автообновление: step2", err)
 	time.Sleep(1 * time.Second)
 
 	return true
 }
 
 func doRestart() {
-	log.Println("Перезапуск приложения.")
+	Logger("Перезапуск приложения.")
 	if isServer {
 		cmd := exec.Command(appName, "wait", "server")
 		cmd.Start()
@@ -224,12 +224,18 @@ func savePacket(packet progInfo) {
 	f.Close()
 }
 
+var logger chan []interface{} = make(chan []interface{}, 100)
+
+func Logger(a ...interface{}) {
+	logger <- a
+}
+
 func main() {
 	// defer profile.Start().Stop()
 	// проверяем что это не перезапуск
 	for _, v := range os.Args {
 		if v == "wait" {
-			log.Println("Автообновление: ждем 10 секунд перед стартом ...")
+			Logger("Автообновление: ждем 10 секунд перед стартом ...")
 			time.Sleep(10 * time.Second)
 		}
 		if v == "debug" {
@@ -250,17 +256,26 @@ func main() {
 	guiLastWork = make(chan progInfo)
 	selfupdate = make(chan string)
 	//настройка логирования
-	f_log, err := os.OpenFile("apt.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-	if err != nil {
-		log.Println("error opening log file: %v", err)
-	}
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	defer f_log.Close()
+	go func() {
+		f_log, err := os.OpenFile("apt.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+		if err != nil {
+			log.Println("error opening log file: %v", err)
+		}
+		log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+		defer f_log.Close()
+		wrt := io.MultiWriter(f_log, os.Stdout)
+		log.SetOutput(wrt)
+		log.Println("Старт логгирования.")
+		for {
+			select {
+			case s := <-logger:
+				log.Println(s)
+			}
+		}
+	}()
 
-	wrt := io.MultiWriter(f_log, os.Stdout)
-	log.SetOutput(wrt)
-	log.Println("APPNAME", appName, "VERSION", version)
-	log.Println("LOGING setup ok")
+	Logger("APPNAME", appName, "VERSION", version)
+	Logger("LOGING setup ok")
 
 	if isServer == false {
 		// загурзка конфигурации
@@ -307,26 +322,26 @@ func main() {
 			f_cfg.WriteString(string(buf_cfg))
 			f_cfg.Close()
 		}
-		log.Println("Текущая конфигурация:")
-		log.Println(cfgMain)
+		Logger("Текущая конфигурация:")
+		Logger(cfgMain)
 	}
 
 	// поток самообновления
 
 	if isServer == false {
-		log.Println("Запуск службы самообновления.")
+		Logger("Запуск службы самообновления.")
 		go func() {
 			for {
 				select {
 				case st := <-selfupdate:
 					if st == shedSelfRestart {
-						log.Println("Начало перезапуска. Ожидание 60 сек.")
+						Logger("Начало перезапуска. Ожидание 60 сек.")
 						time.Sleep(60 * time.Second)
 						doRestart()
 					}
 					if st == shedSelfUpdate {
 						if doUpdate() {
-							log.Println("Начало перезапуска")
+							Logger("Начало перезапуска")
 							time.Sleep(2 * time.Second)
 							doRestart()
 						}
@@ -336,7 +351,7 @@ func main() {
 					_, min, _ := time.Now().Clock()
 					if min%10 == 0 {
 						if doUpdate() {
-							log.Println("Начало перезапуска")
+							Logger("Начало перезапуска")
 							time.Sleep(2 * time.Second)
 							doRestart()
 						}
@@ -362,7 +377,7 @@ func main() {
 }
 
 func guiInit(guiChan chan progInfo) {
-	log.Println("GUI init begin")
+	Logger("GUI init begin")
 
 	var guiLastInfo []progInfo
 	guiLastInfo = make([]progInfo, 0)
@@ -475,12 +490,12 @@ func guiInit(guiChan chan progInfo) {
 	//ni.ShowInfo("Walk NotifyIcon Example", "Click the icon to show again.")
 
 	// Run the message loop.
-	log.Println("GUI запущен")
+	Logger("GUI запущен")
 	mw.Run()
 }
 
 func sheduler() {
-	log.Println("Планировщик: запущен")
+	Logger("Планировщик: запущен")
 
 	// запускаем клиента веб
 	sendChan := make(chan progInfo, 100)
@@ -497,7 +512,7 @@ func sheduler() {
 			select {
 			case t := <-taskChan:
 				taskToWork = append(taskToWork, t)
-				log.Println("Планировщик: задача добавлена.", t)
+				Logger("Планировщик: задача добавлена.", t)
 			default:
 				if len(taskToWork) > 0 {
 
@@ -562,19 +577,19 @@ func sheduler() {
 		// обработка входящих комманд от сервера
 		select {
 		case cmd := <-cmdrcvChan:
+			// добавлено если Restart и Hello отсутствуют в конфигурации планировщике
+			if cmd.TASKSTATUS.SHED_TYPE == shedSelfRestart || cmd.TASKSTATUS.SHED_TYPE == shedHello {
+				work := cfgTask{ShedType: cmd.TASKSTATUS.SHED_TYPE}
+				taskChan <- work
+				break
+			}
+
 			//ищем conf по cmd
 			for _, v := range cfgMain.Tasks {
 				if cmd.TASKSTATUS.SHED_TYPE == v.ShedType {
 					taskChan <- v
 					break
 				}
-			}
-
-			// добавлено если Restart и Hello отсутствуют в конфигурации планировщике
-			if cmd.TASKSTATUS.SHED_TYPE == shedSelfRestart || cmd.TASKSTATUS.SHED_TYPE == shedHello {
-				work := cfgTask{ShedType: cmd.TASKSTATUS.SHED_TYPE}
-				taskChan <- work
-				break
 			}
 
 		default:
@@ -628,14 +643,14 @@ func task(cfg cfgTask) taskStatus {
 		cmd = exec.Command(exePath, cfg.Param...)
 	}
 
-	log.Println("Планировщик: задание ", cfg.ShedType, " запущено. (", exePath, cfg.Param, ")")
+	Logger("Планировщик: задание ", cfg.ShedType, " запущено. (", exePath, cfg.Param, ")")
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 
 	err = cmd.Start()
 
 	if err != nil {
-		log.Println("Планировщик: ошибка запуска задания ", cfg.ShedType, err)
+		Logger("Планировщик: ошибка запуска задания ", cfg.ShedType, err)
 		status.LOG = fmt.Sprintln("Планировщик:", err.Error())
 	}
 	// ожидание завершения работы
@@ -657,7 +672,7 @@ func task(cfg cfgTask) taskStatus {
 		select {
 		case ret := <-done:
 			status.EXITCODE = ret
-			// log.Println("Завешен обмен")
+			// Logger("Завешен обмен")
 			break
 		default:
 
@@ -684,7 +699,7 @@ func task(cfg cfgTask) taskStatus {
 
 	sss, _ := charmap.CodePage866.NewDecoder().String(string(buf.String()))
 
-	log.Println("Планировщик: задание:", cfg.ShedType, " закончено. ExitCode=", status.EXITCODE)
+	Logger("Планировщик: задание:", cfg.ShedType, " закончено. ExitCode=", status.EXITCODE)
 	status.STOP = time.Now()
 
 	if sss == "" {
@@ -699,15 +714,17 @@ func task(cfg cfgTask) taskStatus {
 
 		yy, mm, dd := time.Now().Date()
 
-		logPath := filepath.Join(cfg.Path, fmt.Sprintf("EX_TMP\\%4d_%2d_2d.log", yy, mm, dd))
+		logPath := filepath.Join(cfg.Path, fmt.Sprintf("EX_LOG\\%4d_%2d_%2d.log", yy, mm, dd))
 
 		bbb, err := ioutil.ReadFile(logPath)
-		log.Println("Планировщик: собираем статистику." + logPath)
+		Logger("Планировщик: собираем статистику."+logPath, len(bbb), err)
 
 		if err != nil {
 			status.LOG += err.Error()
 		} else {
-			status.LOG += string(bbb)
+			// status.LOG += string(bbb)
+			sss, _ := charmap.Windows1251.NewDecoder().String(string(bbb))
+			status.LOG += sss
 		}
 	}
 
@@ -721,16 +738,16 @@ func killProc(bin string) {
 	cmdKill := exec.Command("TASKKILL.EXE", "/F", "/IM", bin, "/T")
 	err := cmdKill.Run()
 	if err != nil && debug {
-		log.Printf("TASKKILL "+bin+" error: %v", err)
+		Logger("TASKKILL", bin, " error:", err)
 	}
 }
 
 func Webserver() {
-	log.Println("WS Server start...")
+	Logger("WS Server start...")
 
 	db, err := sql.Open("sqlite3", "apt.db")
 	if err != nil {
-		log.Panic("WS Server SQL open error:", err)
+		log.Panic("WS Server SQLite open error:", err)
 	}
 	dbSrv = db
 	defer db.Close()
@@ -745,21 +762,21 @@ func Webserver() {
 	http.HandleFunc("/aptupdate", SrvAptUpdate)
 	http.HandleFunc("/clients", SrvClients)
 
-	log.Println(http.ListenAndServe("0.0.0.0:8081", nil))
+	Logger(http.ListenAndServe("0.0.0.0:8081", nil))
 }
 
 func SrvAptUpdate(w http.ResponseWriter, r *http.Request) {
 	keys, ok := r.URL.Query()["ver"]
-	log.Println("Сервер автообновления: клиент подключился", r.RemoteAddr, r.RequestURI)
+	Logger("Сервер автообновления: клиент подключился", r.RemoteAddr, r.RequestURI)
 
 	if !ok || len(keys[0]) < 1 {
-		log.Println("Сервер автообновления: ключ 'ver' отсутствует.")
+		Logger("Сервер автообновления: ключ 'ver' отсутствует.")
 		return
 	}
 
 	value, err := strconv.ParseInt(keys[0], 10, 32)
 	if err != nil {
-		log.Println("Сервер автообновления: ключ 'ver' ошибка формата", err)
+		Logger("Сервер автообновления: ключ 'ver' ошибка формата", err)
 		return
 	}
 
@@ -769,14 +786,14 @@ func SrvAptUpdate(w http.ResponseWriter, r *http.Request) {
 
 	file, err := os.Open(appName)
 	if err != nil {
-		log.Println(err)
+		Logger(err)
 		return
 	}
 	defer file.Close()
 
 	fi, err := file.Stat()
 	if err != nil {
-		log.Println(err)
+		Logger(err)
 		return
 	}
 
@@ -784,10 +801,10 @@ func SrvAptUpdate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", strconv.Itoa(int(fi.Size())))
 
-	log.Println("Сервер автообновления: Отправка обновления.", r.RemoteAddr)
+	Logger("Сервер автообновления: Отправка обновления.", r.RemoteAddr)
 	io.Copy(w, file)
 
-	log.Println("Сервер автообновления: Обновление получено клиентом.", r.RemoteAddr)
+	Logger("Сервер автообновления: Обновление получено клиентом.", r.RemoteAddr)
 }
 
 type clientsInfo struct {
@@ -800,10 +817,10 @@ var clients map[string]clientsInfo = make(map[string]clientsInfo)
 
 func SrvClients(w http.ResponseWriter, r *http.Request) {
 	keys, ok := r.URL.Query()["raw"]
-	log.Println("WS SrvClients: клиент подключился", r.RemoteAddr, r.RequestURI)
+	Logger("WS SrvClients: клиент подключился", r.RemoteAddr, r.RequestURI)
 
 	if ok && len(keys) > 0 {
-		log.Println("WS SrvClients: клиент подключился", r.RemoteAddr, r.RequestURI)
+		Logger("WS SrvClients: клиент подключился", r.RemoteAddr, r.RequestURI)
 		buf, _ := json.MarshalIndent(&clients, "", "  ")
 		w.Write(buf)
 		return
@@ -814,7 +831,7 @@ func SrvClients(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		// w.Write(err.Error())
-		log.Println("WS SrvClients: ошибка SQL", err)
+		Logger("WS SrvClients: ошибка SQL", err)
 		return
 	}
 
@@ -838,7 +855,7 @@ func SrvClients(w http.ResponseWriter, r *http.Request) {
 	for k, v := range clients {
 		_, ok := info[k]
 		if ok == false {
-			log.Println("Ошибочный ключ в clients", k)
+			Logger("Ошибочный ключ в clients", k)
 			continue
 		}
 		tmp := info[k]
@@ -945,8 +962,9 @@ func SrvClients(w http.ResponseWriter, r *http.Request) {
 }
 
 func SrvAptstat(w http.ResponseWriter, r *http.Request) {
+
 	var upgrader = websocket.Upgrader{} // use default options
-	log.Println("WS SrvAptstat: клиент подключился", r.RemoteAddr, r.RequestURI)
+	Logger("WS SrvAptstat: клиент подключился", r.RemoteAddr, r.RequestURI)
 
 	// проверяем ключи если есть node_id и shed_type заначит это комманда клиенту
 	keys_node, _ := r.URL.Query()["node_id"]
@@ -956,7 +974,7 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 		// обработка входящего запроса и отпавка комманды клиенту
 		conInfo, ok_con := clients[keys_node[0]]
 		if ok_con == false {
-			log.Println("WS SrvAptstat: Клиента с node_id=", keys_node[0], " нет.")
+			Logger("WS SrvAptstat: Клиента с node_id=", keys_node[0], " нет.")
 			return
 		}
 
@@ -971,14 +989,15 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 
 	if len(r.URL.Query()) > 0 {
 		// обработка ошибочного запроса
-		log.Println("WS SrvAptstat:  'node_id= shed_type=' ошибка в параметрах", r.URL.Query())
+		Logger("WS SrvAptstat:  'node_id= shed_type=' ошибка в параметрах", r.URL.Query())
 		return
 	}
 
+	Logger("WS SrvAptstat: стартуем", r.RemoteAddr)
 	// запрос на соединение
 	con, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Print("WS SrvAptstat: ошибка создания websocket:", err)
+		Logger("WS SrvAptstat: ошибка создания websocket:", err)
 		return
 	}
 	defer con.Close()
@@ -991,11 +1010,11 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 		var packet progInfo
 		err := con.ReadJSON(&packet)
 		if err != nil {
-			log.Println("WS SrvAptstat: JSON read error:", err)
+			Logger("WS SrvAptstat: JSON read error:", err)
 			break
 		}
 		if debug {
-			log.Println("WS SrvAptstat:  recv:", packet)
+			Logger("WS SrvAptstat:  recv:", packet)
 		}
 		if first_packet {
 			clients[packet.NODE_ID] = clientsInfo{
@@ -1003,6 +1022,8 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 				Info: packet,
 				Con:  con,
 			}
+
+			Logger("WS SrvAptstat: клиент подключился", r.RemoteAddr, packet.NODE_ID, packet.NODE_NAME)
 
 			first_node_id = packet.NODE_ID
 			first_packet = false
@@ -1016,11 +1037,11 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 		err = row.Scan(&apt_version, &sysver, &pred_id, &node_id, &node_name, &node_cfg)
 
 		if err == sql.ErrNoRows {
-			log.Println("WS SrvAptstat:  SQL - добавляем запись")
+			Logger("WS SrvAptstat:  SQL - добавляем запись", packet)
 			_, err := dbSrv.Exec("insert into CLIENTS (APT_VERSION, SYSVER, PRED_ID, NODE_ID, NODE_NAME, NODE_CFG) values ($1, $2, $3, $4 ,$5,$6)",
 				packet.APT_VERSION, packet.SYSVER, packet.PRED_ID, packet.NODE_ID, packet.NODE_NAME, packet.NODE_CFG)
 			if err != nil {
-				log.Println("WS SrvAptstat:  SQL error", err)
+				Logger("WS SrvAptstat:  SQL error", err)
 			}
 		} else {
 			//обновляем запись
@@ -1028,7 +1049,7 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 				packet.APT_VERSION != apt_version || packet.NODE_CFG != node_cfg {
 				dbSrv.Exec("update CLIENTS set APT_VERSION = $1, SYSVER=$2, PRED_ID=$3, NODE_NAME=$4, NODE_CFG=$5 where NODE_ID = $6",
 					packet.APT_VERSION, packet.SYSVER, packet.PRED_ID, packet.NODE_NAME, packet.NODE_CFG, packet.NODE_ID)
-				log.Println("WS SrvAptstat: SQL - запись обновлена")
+				Logger("WS SrvAptstat: SQL - запись обновлена", packet)
 
 			}
 		}
@@ -1039,7 +1060,7 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 		var version_db = make(map[string]string)
 		rows, err := dbSrv.Query("SELECT * FROM EXE_VERSION where NODE_ID = $1", packet.NODE_ID)
 		if err != nil {
-			log.Println("WS SrvAptstat:  SQL error", err)
+			Logger("WS SrvAptstat:  SQL error", err)
 		} else if err == sql.ErrNoRows {
 			// добавляем все записи в первый раз
 			update = true
@@ -1050,7 +1071,7 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 			for rows.Next() {
 				err = rows.Scan(&node_id, &name, &version, &version_old)
 				if err != nil {
-					log.Println("WS SrvAptstat: SQL error", err)
+					Logger("WS SrvAptstat: SQL error", err)
 				} else {
 					version_db[name] = version
 				}
@@ -1064,14 +1085,14 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 		if update {
 			_, err := dbSrv.Exec("delete from EXE_VERSION where NODE_ID = $1", packet.NODE_ID)
 			if err != nil {
-				log.Println("WS SrvAptstat:  Delete error", err)
+				Logger("WS SrvAptstat:  Delete error", err)
 			} else {
 				for k, v := range packet.EXE_VERSION {
 					_, err := dbSrv.Exec("insert into EXE_VERSION (NODE_ID, NAME, VERSION, VERSION_OLD)  values ($1, $2, $3, $4)",
 						packet.NODE_ID, k, v, version_db[k])
 
 					if debug {
-						log.Println(err, packet.NODE_ID, k, v, version_db[k])
+						Logger(err, packet.NODE_ID, k, v, version_db[k])
 					}
 
 				}
@@ -1110,21 +1131,24 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 			sss_log)
 
 		if packet.TASKSTATUS.SHED_TYPE == shedExServer {
+			Logger("Большой лог: ", len(sss_big_log))
 			//дополнительно сохраним большой лог
 
 			yy, mm, dd := packet.TASKSTATUS.START.Date()
 			date := fmt.Sprintf("%4d-%2d-%2d 23:59:59", yy, mm, dd)
 			// удалим старый лог
-			_, err = dbSrv.Exec("delete from LOGS where NODE_ID = $1, DATE_START=%2, TYPE=%3",
+			_, err = dbSrv.Exec("delete from LOGS where NODE_ID = $1 and DATE_START=$2 and TYPE=$3",
 				packet.NODE_ID, date, packet.TASKSTATUS.SHED_TYPE+"BIG")
+			Logger("delete from LOGS where NODE_ID = $1 and DATE_START=$2 and TYPE=$3", packet.NODE_ID, date, packet.TASKSTATUS.SHED_TYPE+"BIG", err)
 
 			//сохраним sss_big_log
 			_, err = dbSrv.Exec("insert into LOGS (NODE_ID, TYPE, DATE_START, DATE_END, EXITCODE, LOG) values ($1, $2, $3, $4, $5, $6)",
 				packet.NODE_ID, packet.TASKSTATUS.SHED_TYPE+"BIG", date, date, "", sss_big_log)
+			Logger("insert into LOGS (NODE_ID, TYPE, DATE_START, DATE_END, EXITCODE, LOG) ", packet.TASKSTATUS.SHED_TYPE+"BIG", err)
 		}
 
 		if debug {
-			log.Println("WS SrvAptstat: error: ", err)
+			Logger("WS SrvAptstat: error: ", err)
 		}
 
 		//обновим информацию о последнем пакете
@@ -1172,15 +1196,15 @@ func ClntAptstat(sendChan chan progInfo, cmdrcvChan chan<- progInfo) {
 	for { //for установки соединения
 
 		// устанавливаем соединение
-		log.Println("WS Client Aptstat: подключаемся к ", u.String())
+		Logger("WS Client Aptstat: подключаемся к ", u.String())
 		con, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 		if err != nil {
-			log.Println("WS Client Aptstat: ошибка установки соединния: ", err)
+			Logger("WS Client Aptstat: ошибка установки соединния: ", err)
 			time.Sleep(10 * time.Second)
 			continue
 		}
 		defer con.Close()
-		log.Println("WS Client Aptstat: соединение установленно.")
+		Logger("WS Client Aptstat: соединение установленно.")
 
 		ticker := time.NewTicker(15 * time.Second)
 		defer func() {
@@ -1214,7 +1238,7 @@ func ClntAptstat(sendChan chan progInfo, cmdrcvChan chan<- progInfo) {
 					readChan <- packetToRead
 				} else {
 					//если ошибка то ошибка
-					log.Println("WS Client read error", err)
+					Logger("WS Client read error", err)
 
 					// посылаем пустой пакет для завершения соединения
 					readChan <- progInfo{APT_VERSION: -1}
@@ -1250,7 +1274,7 @@ func ClntAptstat(sendChan chan progInfo, cmdrcvChan chan<- progInfo) {
 					err := con.WriteMessage(websocket.TextMessage, buf)
 
 					if err != nil {
-						log.Println("WS Client Aptstat: ошибка записи пакета:", err)
+						Logger("WS Client Aptstat: ошибка записи пакета:", err)
 						break
 					} else {
 						// пакет успешно отправлен
@@ -1263,7 +1287,7 @@ func ClntAptstat(sendChan chan progInfo, cmdrcvChan chan<- progInfo) {
 				lens = len(packetsToRead)
 				if lens > 0 {
 					packet := packetsToRead[lens-1]
-					log.Println("WS Client Aptstat: Входящий пакет для обработки.", packet.TASKSTATUS.SHED_TYPE)
+					Logger("WS Client Aptstat: Входящий пакет для обработки.", packet.TASKSTATUS.SHED_TYPE)
 
 					// отправка пакета на выполение в планировщик
 					cmdrcvChan <- packet
@@ -1275,7 +1299,7 @@ func ClntAptstat(sendChan chan progInfo, cmdrcvChan chan<- progInfo) {
 			}
 			break
 		} //for прием в буфер пакетов
-		log.Println("WS Client Aptstat: завершение соединения.")
+		Logger("WS Client Aptstat: завершение соединения.")
 	} //for установки соединения
 }
 
@@ -1296,12 +1320,12 @@ func sendEmail(body string) {
 		from, []string{to}, []byte(msg))
 
 	if err != nil {
-		log.Println("Отправка почты: ошибка.", err)
+		Logger("Отправка почты: ошибка.", err)
 		return
 	}
 
-	log.Println("Отправка почты: ")
-	log.Println(msg)
+	Logger("Отправка почты: ")
+	Logger(msg)
 }
 
 // var temlMain string = `

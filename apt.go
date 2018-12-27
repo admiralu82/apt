@@ -504,6 +504,7 @@ func sheduler() {
 
 	go ClntAptstat(sendChan, cmdrcvChan)
 
+	// функция обработки заданий
 	go func() {
 		taskToWork := make([]cfgTask, 0)
 
@@ -577,6 +578,7 @@ func sheduler() {
 		// обработка входящих комманд от сервера
 		select {
 		case cmd := <-cmdrcvChan:
+			Logger("Планировщик: получена внешняя комманда.", cmd)
 			// добавлено если Restart и Hello отсутствуют в конфигурации планировщике
 			if cmd.TASKSTATUS.SHED_TYPE == shedSelfRestart || cmd.TASKSTATUS.SHED_TYPE == shedHello {
 				work := cfgTask{ShedType: cmd.TASKSTATUS.SHED_TYPE}
@@ -897,7 +899,7 @@ func SrvClients(w http.ResponseWriter, r *http.Request) {
 	
 	.table_sort td,
 	.table_sort th {
-		width: 150px;
+		
 		height: 40px;
 		text-align: center;
 		border: 2px solid #846868;
@@ -1046,9 +1048,11 @@ func SrvAptstat(w http.ResponseWriter, r *http.Request) {
 		} else {
 			//обновляем запись
 			if packet.NODE_NAME != node_name || packet.PRED_ID != pred_id ||
-				packet.APT_VERSION != apt_version || packet.NODE_CFG != node_cfg {
+				packet.APT_VERSION != apt_version || packet.NODE_CFG != node_cfg ||
+				packet.SYSVER != sysver {
 				dbSrv.Exec("update CLIENTS set APT_VERSION = $1, SYSVER=$2, PRED_ID=$3, NODE_NAME=$4, NODE_CFG=$5 where NODE_ID = $6",
-					packet.APT_VERSION, packet.SYSVER, packet.PRED_ID, packet.NODE_NAME, packet.NODE_CFG, packet.NODE_ID)
+					packet.APT_VERSION, packet.SYSVER, packet.PRED_ID, packet.NODE_NAME,
+					packet.NODE_CFG, packet.NODE_ID)
 				Logger("WS SrvAptstat: SQL - запись обновлена", packet)
 
 			}

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"apt/xtask"
+	"./xtask"
 	"fmt"
 	"io"
 	"log"
@@ -12,8 +12,6 @@ import (
 )
 
 var aptExe = "apt.exe"
-var apthExe = "apth.exe"
-
 
 
 var logger chan []interface{} = make(chan []interface{}, 100)
@@ -57,8 +55,8 @@ func main() {
 		}
 
 
+		lastCount = 0
 		for _, v := range windowsProcesses {
-			lastCount = 0
 			if strings.Compare( strings.ToLower(v.Exe), aptExe) ==0 {
 				lastCount++
 			}
@@ -100,18 +98,20 @@ func main() {
 				// завершаем работу всех apt.exe
 				//xtask.KillAll(aptExe)
 				for _, v := range windowsProcesses {
-					proc, err := os.FindProcess(v.ProcessID)
+					if strings.Compare( strings.ToLower(v.Exe), aptExe) ==0 {
+						proc, err := os.FindProcess(v.ProcessID)
+						if err!= nil {
+							Logger("Error Find Process.",err)
+							continue
+						}
+						proc.Kill()
 
-					if err!= nil {
-						Logger("Error Find Process.",err)
-						continue
+						Logger("Несколько копий. Kill process", v.Exe, v.ProcessID )
+						time.Sleep(1*time.Second)
 					}
-					proc.Kill()
-
-					Logger("Несколько копий. Kill process", v.Exe, v.ProcessID )
-					time.Sleep(1*time.Second)
 				}
 
+				// подождем немоного
 				lastScan = false
 				continue
 			}

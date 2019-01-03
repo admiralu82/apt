@@ -59,7 +59,7 @@ func main() {
 
 		for _, v := range windowsProcesses {
 			lastCount = 0
-			if strings.ToLower(v.Exe)==aptExe {
+			if strings.Compare( strings.ToLower(v.Exe), aptExe) ==0 {
 				lastCount++
 			}
 		}
